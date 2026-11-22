@@ -1,577 +1,370 @@
-// news-image-20261121 — a program that draws a newspaper front page summing up
-// Saturday 21 November 2026 and writes it to /output/entry.png.
-// Node 22, standard library only. No network, no clock, no randomness:
-// every run draws the same pixels and writes byte-identical output.
-//
-// The image is 1024x1024, drawn by a small software rasteriser in this file:
-// a 5x7 bitmap font, flat-colour scenes per story, and a hand-rolled PNG
-// encoder (node:zlib for the compressed data). All stories were verified
-// against news reports dated 21 November 2026 before being drawn.
+// news-image-20261121 — "The Daily Globe" front page for Saturday 21 November 2026.
+// Written from scratch in this session. Node 22 stdlib only, no network at run time.
+// Draws a newspaper front page onto a 1024x1024 RGB canvas, then encodes it as PNG.
 
-import { mkdirSync, writeFileSync } from 'node:fs';
-import { join } from 'node:path';
-import { deflateSync } from 'node:zlib';
-
-// ------------------------------------------------------------------ font --
-// 5x7 bitmap font, written for this entry. Each glyph is 7 rows; each row is
-// a 5-bit number, bit 4 = leftmost pixel. Lowercase glyphs sit on rows 1..6,
-// with descenders reaching row 6. Headlines are set in capitals; body copy
-// uses mixed case.
-const GLYPHS: Record<string, number[]> = {
-  A: [0x0e, 0x11, 0x11, 0x1f, 0x11, 0x11, 0x11],
-  B: [0x1e, 0x11, 0x11, 0x1e, 0x11, 0x11, 0x1e],
-  C: [0x0e, 0x11, 0x10, 0x10, 0x10, 0x11, 0x0e],
-  D: [0x1e, 0x11, 0x11, 0x11, 0x11, 0x11, 0x1e],
-  E: [0x1f, 0x10, 0x10, 0x1e, 0x10, 0x10, 0x1f],
-  F: [0x1f, 0x10, 0x10, 0x1e, 0x10, 0x10, 0x10],
-  G: [0x0e, 0x11, 0x10, 0x17, 0x11, 0x11, 0x0f],
-  H: [0x11, 0x11, 0x11, 0x1f, 0x11, 0x11, 0x11],
-  I: [0x0e, 0x04, 0x04, 0x04, 0x04, 0x04, 0x0e],
-  J: [0x07, 0x02, 0x02, 0x02, 0x02, 0x12, 0x0c],
-  K: [0x11, 0x12, 0x14, 0x18, 0x14, 0x12, 0x11],
-  L: [0x10, 0x10, 0x10, 0x10, 0x10, 0x10, 0x1f],
-  M: [0x11, 0x1b, 0x15, 0x15, 0x11, 0x11, 0x11],
-  N: [0x11, 0x19, 0x15, 0x13, 0x11, 0x11, 0x11],
-  O: [0x0e, 0x11, 0x11, 0x11, 0x11, 0x11, 0x0e],
-  P: [0x1e, 0x11, 0x11, 0x1e, 0x10, 0x10, 0x10],
-  Q: [0x0e, 0x11, 0x11, 0x11, 0x15, 0x12, 0x0d],
-  R: [0x1e, 0x11, 0x11, 0x1e, 0x14, 0x12, 0x11],
-  S: [0x0f, 0x10, 0x10, 0x0e, 0x01, 0x01, 0x1e],
-  T: [0x1f, 0x04, 0x04, 0x04, 0x04, 0x04, 0x04],
-  U: [0x11, 0x11, 0x11, 0x11, 0x11, 0x11, 0x0e],
-  V: [0x11, 0x11, 0x11, 0x11, 0x11, 0x0a, 0x04],
-  W: [0x11, 0x11, 0x11, 0x15, 0x15, 0x1b, 0x11],
-  X: [0x11, 0x11, 0x0a, 0x04, 0x0a, 0x11, 0x11],
-  Y: [0x11, 0x11, 0x0a, 0x04, 0x04, 0x04, 0x04],
-  Z: [0x1f, 0x01, 0x02, 0x04, 0x08, 0x10, 0x1f],
-  '0': [0x0e, 0x11, 0x13, 0x15, 0x19, 0x11, 0x0e],
-  '1': [0x04, 0x0c, 0x04, 0x04, 0x04, 0x04, 0x0e],
-  '2': [0x0e, 0x11, 0x01, 0x06, 0x08, 0x10, 0x1f],
-  '3': [0x1f, 0x02, 0x04, 0x02, 0x01, 0x11, 0x0e],
-  '4': [0x02, 0x06, 0x0a, 0x12, 0x1f, 0x02, 0x02],
-  '5': [0x1f, 0x10, 0x1e, 0x01, 0x01, 0x11, 0x0e],
-  '6': [0x06, 0x08, 0x10, 0x1e, 0x11, 0x11, 0x0e],
-  '7': [0x1f, 0x01, 0x02, 0x04, 0x08, 0x08, 0x08],
-  '8': [0x0e, 0x11, 0x11, 0x0e, 0x11, 0x11, 0x0e],
-  '9': [0x0e, 0x11, 0x11, 0x0f, 0x01, 0x02, 0x0c],
-  ' ': [0, 0, 0, 0, 0, 0, 0],
-  '.': [0, 0, 0, 0, 0, 0x0c, 0x0c],
-  ',': [0, 0, 0, 0, 0x0c, 0x04, 0x08],
-  "'": [0x04, 0x04, 0x08, 0, 0, 0, 0],
-  ':': [0, 0x0c, 0x0c, 0, 0x0c, 0x0c, 0],
-  ';': [0, 0x0c, 0x0c, 0, 0x0c, 0x04, 0x08],
-  '!': [0x04, 0x04, 0x04, 0x04, 0x04, 0, 0x04],
-  '?': [0x0e, 0x11, 0x01, 0x02, 0x04, 0, 0x04],
-  '-': [0, 0, 0, 0x0e, 0, 0, 0],
-  '(': [0x02, 0x04, 0x08, 0x08, 0x08, 0x04, 0x02],
-  ')': [0x08, 0x04, 0x02, 0x02, 0x02, 0x04, 0x08],
-  '/': [0x01, 0x01, 0x02, 0x04, 0x08, 0x10, 0x10],
-  '&': [0x0c, 0x12, 0x14, 0x08, 0x15, 0x12, 0x0d],
-  '%': [0x19, 0x19, 0x02, 0x04, 0x08, 0x13, 0x13],
-  '$': [0x04, 0x0f, 0x14, 0x0e, 0x05, 0x1e, 0x04],
-  '+': [0, 0x04, 0x04, 0x0e, 0x04, 0x04, 0],
-  '=': [0, 0, 0x1f, 0, 0x1f, 0, 0],
-  '"': [0x0a, 0x0a, 0x0a, 0, 0, 0, 0],
-  '*': [0, 0x04, 0x15, 0x0e, 0x15, 0x04, 0],
-  '•': [0, 0, 0, 0x0c, 0x0c, 0, 0],
-  a: [0, 0, 0x0e, 0x01, 0x0f, 0x11, 0x0f],
-  b: [0x10, 0x10, 0x1e, 0x11, 0x11, 0x11, 0x1e],
-  c: [0, 0, 0x0e, 0x10, 0x10, 0x10, 0x0e],
-  d: [0x01, 0x01, 0x0f, 0x11, 0x11, 0x11, 0x0f],
-  e: [0, 0, 0x0e, 0x11, 0x1f, 0x10, 0x0e],
-  f: [0x06, 0x08, 0x1e, 0x08, 0x08, 0x08, 0x08],
-  g: [0, 0x0f, 0x11, 0x11, 0x0f, 0x01, 0x0e],
-  h: [0x10, 0x10, 0x1e, 0x11, 0x11, 0x11, 0x11],
-  i: [0x04, 0, 0x0c, 0x04, 0x04, 0x04, 0x0e],
-  j: [0x02, 0, 0x06, 0x02, 0x02, 0x12, 0x0c],
-  k: [0x10, 0x10, 0x12, 0x14, 0x18, 0x14, 0x11],
-  l: [0x0c, 0x04, 0x04, 0x04, 0x04, 0x04, 0x0e],
-  m: [0, 0, 0x1a, 0x15, 0x15, 0x15, 0x15],
-  n: [0, 0, 0x1e, 0x11, 0x11, 0x11, 0x11],
-  o: [0, 0, 0x0e, 0x11, 0x11, 0x11, 0x0e],
-  p: [0, 0x1e, 0x11, 0x11, 0x1e, 0x10, 0x10],
-  q: [0, 0x0f, 0x11, 0x11, 0x0f, 0x01, 0x01],
-  r: [0, 0, 0x16, 0x19, 0x10, 0x10, 0x10],
-  s: [0, 0, 0x0f, 0x10, 0x0e, 0x01, 0x1e],
-  t: [0x04, 0x04, 0x1f, 0x04, 0x04, 0x04, 0x03],
-  u: [0, 0, 0x11, 0x11, 0x11, 0x13, 0x0d],
-  v: [0, 0, 0x11, 0x11, 0x11, 0x0a, 0x04],
-  w: [0, 0, 0x11, 0x15, 0x15, 0x15, 0x0a],
-  x: [0, 0, 0x11, 0x0a, 0x04, 0x0a, 0x11],
-  y: [0, 0, 0x11, 0x11, 0x0f, 0x01, 0x0e],
-  z: [0, 0, 0x1f, 0x02, 0x04, 0x08, 0x1f],
-};
-
-// ---------------------------------------------------------------- surface --
-type RGB = [number, number, number];
+import { writeFileSync, mkdirSync } from "node:fs";
+import { deflateSync } from "node:zlib";
 
 const W = 1024;
 const H = 1024;
 
-// A flat RGB pixel buffer with the drawing primitives the page needs.
-class Sheet {
-  data = new Uint8Array(W * H * 3);
+// ---- palette: cream paper, black ink, deep navy, brick red, slate grey ----
+const PAPER: [number, number, number] = [247, 242, 231];
+const INK: [number, number, number] = [24, 24, 22];
+const NAVY: [number, number, number] = [18, 34, 64];
+const NAVY_SOFT: [number, number, number] = [38, 58, 96];
+const RED: [number, number, number] = [178, 34, 28];
+const GREY: [number, number, number] = [96, 96, 92];
+const LIGHT: [number, number, number] = [232, 226, 212];
+const WHITE: [number, number, number] = [252, 250, 246];
 
-  dot(x: number, y: number, c: RGB): void {
-    if (x < 0 || y < 0 || x >= W || y >= H) return;
-    const i = (y * W + x) * 3;
-    this.data[i] = c[0]; this.data[i + 1] = c[1]; this.data[i + 2] = c[2];
-  }
+// ---- raw RGB canvas -------------------------------------------------------
+const px = new Uint8Array(W * H * 3);
 
-  box(x: number, y: number, w: number, h: number, c: RGB): void {
-    const x0 = Math.max(0, Math.floor(x));
-    const y0 = Math.max(0, Math.floor(y));
-    const x1 = Math.min(W, Math.ceil(x + w));
-    const y1 = Math.min(H, Math.ceil(y + h));
-    for (let yy = y0; yy < y1; yy++) {
-      let i = (yy * W + x0) * 3;
-      for (let xx = x0; xx < x1; xx++, i += 3) {
-        this.data[i] = c[0]; this.data[i + 1] = c[1]; this.data[i + 2] = c[2];
-      }
-    }
-  }
+function put(x: number, y: number, c: [number, number, number]): void {
+  if (x < 0 || y < 0 || x >= W || y >= H) return;
+  const i = (y * W + x) * 3;
+  px[i] = c[0]; px[i + 1] = c[1]; px[i + 2] = c[2];
+}
 
-  border(x: number, y: number, w: number, h: number, t: number, c: RGB): void {
-    this.box(x, y, w, t, c);
-    this.box(x, y + h - t, w, t, c);
-    this.box(x, y, t, h, c);
-    this.box(x + w - t, y, t, h, c);
-  }
-
-  // Filled circle.
-  blob(cx: number, cy: number, r: number, c: RGB): void {
-    for (let y = Math.floor(cy - r); y <= Math.ceil(cy + r); y++) {
-      for (let x = Math.floor(cx - r); x <= Math.ceil(cx + r); x++) {
-        const dx = x - cx, dy = y - cy;
-        if (dx * dx + dy * dy <= r * r) this.dot(x, y, c);
-      }
-    }
-  }
-
-  // Filled ellipse.
-  oval(cx: number, cy: number, rx: number, ry: number, c: RGB): void {
-    for (let y = Math.floor(cy - ry); y <= Math.ceil(cy + ry); y++) {
-      for (let x = Math.floor(cx - rx); x <= Math.ceil(cx + rx); x++) {
-        const dx = (x - cx) / rx, dy = (y - cy) / ry;
-        if (dx * dx + dy * dy <= 1) this.dot(x, y, c);
-      }
-    }
-  }
-
-  // Thick line: Bresenham walk with a square brush.
-  stroke(x0: number, y0: number, x1: number, y1: number, t: number, c: RGB): void {
-    const dx = Math.abs(x1 - x0), dy = Math.abs(y1 - y0);
-    const sx = x0 < x1 ? 1 : -1, sy = y0 < y1 ? 1 : -1;
-    let err = dx - dy, x = x0, y = y0;
-    const half = Math.floor(t / 2);
-    for (let guard = 0; guard < 8192; guard++) {
-      this.box(x - half, y - half, t, t, c);
-      if (x === x1 && y === y1) break;
-      const e2 = 2 * err;
-      if (e2 > -dy) { err -= dy; x += sx; }
-      if (e2 < dx) { err += dx; y += sy; }
-    }
-  }
-
-  // Filled triangle by barycentric scan.
-  wedge(ax: number, ay: number, bx: number, by: number, cx: number, cy: number, c: RGB): void {
-    const minY = Math.max(0, Math.floor(Math.min(ay, by, cy)));
-    const maxY = Math.min(H - 1, Math.ceil(Math.max(ay, by, cy)));
-    const minX = Math.max(0, Math.floor(Math.min(ax, bx, cx)));
-    const maxX = Math.min(W - 1, Math.ceil(Math.max(ax, bx, cx)));
-    const d = (bx - ax) * (cy - ay) - (by - ay) * (cx - ax);
-    if (d === 0) return;
-    for (let y = minY; y <= maxY; y++) {
-      for (let x = minX; x <= maxX; x++) {
-        const w0 = ((bx - x) * (cy - y) - (by - y) * (cx - x)) / d;
-        const w1 = ((cx - x) * (ay - y) - (cy - y) * (ax - x)) / d;
-        const w2 = 1 - w0 - w1;
-        if (w0 >= 0 && w1 >= 0 && w2 >= 0) this.dot(x, y, c);
-      }
-    }
-  }
-
-  // ---- text ----
-  measure(s: string, sc: number): number {
-    return s.length * 6 * sc - sc;
-  }
-
-  print(x: number, y: number, s: string, sc: number, c: RGB): void {
-    let cx = x;
-    for (const ch of s) {
-      const g = GLYPHS[ch] ?? GLYPHS['?'] ?? GLYPHS[' '];
-      if (ch !== ' ') {
-        for (let r = 0; r < 7; r++) {
-          const row = g[r];
-          for (let col = 0; col < 5; col++) {
-            if (row & (1 << (4 - col))) this.box(cx + col * sc, y + r * sc, sc, sc, c);
-          }
-        }
-      }
-      cx += 6 * sc;
-    }
-  }
-
-  // Greedy word wrap into at most maxLines lines within maxW pixels.
-  wrap(s: string, sc: number, maxW: number, maxLines: number): string[] {
-    const words = s.split(' ');
-    const lines: string[] = [];
-    let cur = '';
-    for (const wd of words) {
-      const trial = cur ? cur + ' ' + wd : wd;
-      if (this.measure(trial, sc) <= maxW || !cur) {
-        cur = trial;
-      } else {
-        lines.push(cur);
-        cur = wd;
-        if (lines.length === maxLines) return lines;
-      }
-    }
-    if (cur && lines.length < maxLines) lines.push(cur);
-    return lines.slice(0, maxLines);
-  }
-
-  block(x: number, y: number, s: string, sc: number, maxW: number, maxLines: number, c: RGB, lh?: number): void {
-    const lines = this.wrap(s, sc, maxW, maxLines);
-    const step = lh ?? 9 * sc;
-    lines.forEach((ln, i) => this.print(x, y + i * step, ln, sc, c));
+function rect(x: number, y: number, w: number, h: number, c: [number, number, number]): void {
+  for (let yy = y; yy < y + h; yy++) {
+    for (let xx = x; xx < x + w; xx++) put(xx, yy, c);
   }
 }
 
-// --------------------------------------------------------------- PNG out --
-// Minimal deterministic PNG encoder: signature, IHDR, one IDAT (zlib
-// deflate at level 9, which is deterministic), IEND. CRC32 table is built
-// once from the standard polynomial.
-const CRC_TABLE: number[] = (() => {
-  const t: number[] = [];
-  for (let n = 0; n < 256; n++) {
-    let c = n;
-    for (let k = 0; k < 8; k++) c = c & 1 ? 0xedb88320 ^ (c >>> 1) : c >>> 1;
-    t.push(c >>> 0);
-  }
-  return t;
-})();
+function frame(x: number, y: number, w: number, h: number, c: [number, number, number], t = 2): void {
+  rect(x, y, w, t, c);
+  rect(x, y + h - t, w, t, c);
+  rect(x, y, t, h, c);
+  rect(x + w - t, y, t, h, c);
+}
 
+function hline(x: number, y: number, w: number, c: [number, number, number], t = 2): void {
+  rect(x, y, w, t, c);
+}
+
+function vline(x: number, y: number, h: number, c: [number, number, number], t = 2): void {
+  rect(x, y, t, h, c);
+}
+
+// Bresenham line, thickness 1..3 by stamping small squares.
+function line(x0: number, y0: number, x1: number, y1: number, c: [number, number, number], t = 2): void {
+  const dx = Math.abs(x1 - x0), dy = -Math.abs(y1 - y0);
+  const sx = x0 < x1 ? 1 : -1, sy = y0 < y1 ? 1 : -1;
+  let err = dx + dy, x = x0, y = y0;
+  for (;;) {
+    rect(x - Math.floor(t / 2), y - Math.floor(t / 2), t, t, c);
+    if (x === x1 && y === y1) break;
+    const e2 = 2 * err;
+    if (e2 >= dy) { err += dy; x += sx; }
+    if (e2 <= dx) { err += dx; y += sy; }
+  }
+}
+
+// ---- PNG encoding (zlib from Node stdlib; CRC32 table built at run time) ----
+const CRC_TABLE = new Uint32Array(256);
+for (let n = 0; n < 256; n++) {
+  let v = n;
+  for (let k = 0; k < 8; k++) v = (v & 1) ? (0xedb88320 ^ (v >>> 1)) : (v >>> 1);
+  CRC_TABLE[n] = v >>> 0;
+}
 function crc32(buf: Buffer): number {
   let c = 0xffffffff;
-  for (const b of buf) c = CRC_TABLE[(c ^ b) & 0xff] ^ (c >>> 8);
+  for (let i = 0; i < buf.length; i++) c = CRC_TABLE[(c ^ buf[i]) & 0xff] ^ (c >>> 8);
   return (c ^ 0xffffffff) >>> 0;
 }
-
-function pngChunk(type: string, data: Buffer): Buffer {
+function chunk(type: string, data: Buffer): Buffer {
   const out = Buffer.alloc(12 + data.length);
   out.writeUInt32BE(data.length, 0);
-  out.write(type, 4, 'ascii');
+  out.write(type, 4, "ascii");
   data.copy(out, 8);
-  out.writeUInt32BE(crc32(Buffer.concat([Buffer.from(type, 'ascii'), data])), 8 + data.length);
+  out.writeUInt32BE(crc32(out.subarray(4, 8 + data.length)), 8 + data.length);
   return out;
 }
-
-function encodePNG(sh: Sheet): Buffer {
+function encodePng(): Buffer {
   const ihdr = Buffer.alloc(13);
-  ihdr.writeUInt32BE(W, 0);
-  ihdr.writeUInt32BE(H, 4);
-  ihdr[8] = 8; // 8-bit samples
-  ihdr[9] = 2; // colour type 2 = RGB
-  ihdr[10] = 0; ihdr[11] = 0; ihdr[12] = 0; // no compression/filter/interlace tricks
+  ihdr.writeUInt32BE(W, 0); ihdr.writeUInt32BE(H, 4);
+  ihdr[8] = 8; ihdr[9] = 2; ihdr[10] = 0; ihdr[11] = 0; ihdr[12] = 0;
   const raw = Buffer.alloc(H * (1 + W * 3));
   for (let y = 0; y < H; y++) {
-    raw[y * (1 + W * 3)] = 0; // filter type 0 (none) per scanline
-    raw.set(sh.data.subarray(y * W * 3, (y + 1) * W * 3), y * (1 + W * 3) + 1);
+    raw[y * (1 + W * 3)] = 0;
+    raw.set(px.subarray(y * W * 3, (y + 1) * W * 3), y * (1 + W * 3) + 1);
   }
   const idat = deflateSync(raw, { level: 9 });
   return Buffer.concat([
     Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]),
-    pngChunk('IHDR', ihdr),
-    pngChunk('IDAT', idat),
-    pngChunk('IEND', Buffer.alloc(0)),
+    chunk("IHDR", ihdr), chunk("IDAT", idat), chunk("IEND", Buffer.alloc(0)),
   ]);
 }
 
-// ---------------------------------------------------------------- palette --
-const PAPER: RGB = [247, 243, 235];
-const INK: RGB = [24, 24, 24];
-const WHITE: RGB = [255, 255, 255];
-const RED: RGB = [176, 32, 40];
-const NAVY: RGB = [28, 52, 88];
-const TEAL: RGB = [16, 104, 98];
-const GOLD: RGB = [196, 138, 28];
-const SKY: RGB = [132, 188, 222];
-const GREY: RGB = [104, 102, 94];
-const BODY: RGB = [58, 56, 50];
-const BROWN: RGB = [146, 88, 32];
-const GREEN: RGB = [22, 92, 58];
-const PURPLE: RGB = [88, 38, 108];
-const DARK: RGB = [18, 38, 56];
+// ---- bitmap font: my own 5x7 design, one string per row, "#" = ink --------
+// Uppercase only; lowercase input is uppercased. Unknown chars render blank.
+const FONT: Record<string, string[]> = {
+  A: ["01110", "10001", "10001", "11111", "10001", "10001", "10001"],
+  B: ["11110", "10001", "10001", "11110", "10001", "10001", "11110"],
+  C: ["01110", "10001", "10000", "10000", "10000", "10001", "01110"],
+  D: ["11110", "10001", "10001", "10001", "10001", "10001", "11110"],
+  E: ["11111", "10000", "10000", "11110", "10000", "10000", "11111"],
+  F: ["11111", "10000", "10000", "11110", "10000", "10000", "10000"],
+  G: ["01110", "10001", "10000", "10111", "10001", "10001", "01111"],
+  H: ["10001", "10001", "10001", "11111", "10001", "10001", "10001"],
+  I: ["01110", "00100", "00100", "00100", "00100", "00100", "01110"],
+  J: ["00111", "00010", "00010", "00010", "00010", "10010", "01100"],
+  K: ["10001", "10010", "10100", "11000", "10100", "10010", "10001"],
+  L: ["10000", "10000", "10000", "10000", "10000", "10000", "11111"],
+  M: ["10001", "11011", "10101", "10101", "10001", "10001", "10001"],
+  N: ["10001", "11001", "10101", "10011", "10001", "10001", "10001"],
+  O: ["01110", "10001", "10001", "10001", "10001", "10001", "01110"],
+  P: ["11110", "10001", "10001", "11110", "10000", "10000", "10000"],
+  Q: ["01110", "10001", "10001", "10001", "10101", "10010", "01101"],
+  R: ["11110", "10001", "10001", "11110", "10100", "10010", "10001"],
+  S: ["01111", "10000", "10000", "01110", "00001", "00001", "11110"],
+  T: ["11111", "00100", "00100", "00100", "00100", "00100", "00100"],
+  U: ["10001", "10001", "10001", "10001", "10001", "10001", "01110"],
+  V: ["10001", "10001", "10001", "10001", "10001", "01010", "00100"],
+  W: ["10001", "10001", "10001", "10101", "10101", "11011", "10001"],
+  X: ["10001", "10001", "01010", "00100", "01010", "10001", "10001"],
+  Y: ["10001", "10001", "01010", "00100", "00100", "00100", "00100"],
+  Z: ["11111", "00001", "00010", "00100", "01000", "10000", "11111"],
+  "0": ["01110", "10001", "10011", "10101", "11001", "10001", "01110"],
+  "1": ["00100", "01100", "00100", "00100", "00100", "00100", "01110"],
+  "2": ["01110", "10001", "00001", "00110", "01000", "10000", "11111"],
+  "3": ["11111", "00010", "00100", "00010", "00001", "10001", "01110"],
+  "4": ["00010", "00110", "01010", "10010", "11111", "00010", "00010"],
+  "5": ["11111", "10000", "11110", "00001", "00001", "10001", "01110"],
+  "6": ["00110", "01000", "10000", "11110", "10001", "10001", "01110"],
+  "7": ["11111", "00001", "00010", "00100", "01000", "01000", "01000"],
+  "8": ["01110", "10001", "10001", "01110", "10001", "10001", "01110"],
+  "9": ["01110", "10001", "10001", "01111", "00001", "00010", "01100"],
+  ".": ["00000", "00000", "00000", "00000", "00000", "01100", "01100"],
+  ",": ["00000", "00000", "00000", "00000", "01100", "00100", "01000"],
+  "'": ["00100", "00100", "01000", "00000", "00000", "00000", "00000"],
+  "-": ["00000", "00000", "00000", "01110", "00000", "00000", "00000"],
+  ":": ["00000", "01100", "01100", "00000", "01100", "01100", "00000"],
+  ";": ["00000", "01100", "01100", "00000", "01100", "00100", "01000"],
+  "!": ["00100", "00100", "00100", "00100", "00100", "00000", "00100"],
+  "?": ["01110", "10001", "00001", "00110", "00100", "00000", "00100"],
+  "%": ["11001", "11010", "00010", "00100", "01000", "01011", "10011"],
+  $: ["00100", "01111", "10100", "01110", "00101", "11110", "00100"],
+  "&": ["01100", "10010", "10100", "01000", "10101", "10010", "01101"],
+  "(": ["00010", "00100", "01000", "01000", "01000", "00100", "00010"],
+  ")": ["01000", "00100", "00010", "00010", "00010", "00100", "01000"],
+  "/": ["00001", "00010", "00010", "00100", "01000", "01000", "10000"],
+  "+": ["00000", "00100", "00100", "11111", "00100", "00100", "00000"],
+  "=": ["00000", "00000", "11111", "00000", "11111", "00000", "00000"],
+  '"': ["01010", "01010", "00000", "00000", "00000", "00000", "00000"],
+  " ": ["00000", "00000", "00000", "00000", "00000", "00000", "00000"],
+};
 
-// ------------------------------------------------------------- story card --
-// One story panel: coloured kicker bar, a small flat-colour scene, a
-// two-line headline and a short summary. All text stays inside the frame.
-type Scene = (sh: Sheet, x: number, y: number, w: number, h: number) => void;
-
-function storyCard(
-  sh: Sheet, x: number, y: number, w: number, h: number,
-  kicker: string, kc: RGB, headline: string, summary: string, scene: Scene,
-): void {
-  sh.box(x, y, w, h, WHITE);
-  sh.border(x, y, w, h, 2, INK);
-  sh.box(x + 2, y + 2, w - 4, 22, kc);
-  sh.print(x + 10, y + 7, kicker, 2, WHITE);
-  scene(sh, x + 2, y + 26, w - 4, 84);
-  const hl = sh.wrap(headline, 3, w - 24, 2);
-  hl.forEach((ln, i) => sh.print(x + 12, y + 116 + i * 25, ln, 3, INK));
-  sh.block(x + 12, y + 170, summary, 2, w - 24, 3, BODY, 18);
+function glyph(ch: string): string[] {
+  return FONT[ch.toUpperCase()] ?? FONT[" "];
 }
 
-// ------------------------------------------------------------------ page --
-// Front page, 1024x1024:
-//   masthead 10..100 | lead 106..350 | grid rows 358..606, 614..862
-//   ticker 870..958 | footer 966..1012. All text inside the frame.
-function drawPage(sh: Sheet): void {
-  sh.box(0, 0, W, H, PAPER);
-
-  // ---- masthead ----
-  const title = 'THE DAILY GLOBE';
-  sh.print(Math.floor((W - sh.measure(title, 7)) / 2), 12, title, 7, INK);
-  sh.box(16, 64, W - 32, 2, INK);
-  sh.print(16, 72, 'THE DAY IN FULL', 2, GREY);
-  const date = 'SATURDAY 21 NOVEMBER 2026';
-  sh.print(Math.floor((W - sh.measure(date, 3)) / 2), 70, date, 3, RED);
-  const ed = 'LATE EDITION';
-  sh.print(W - 16 - sh.measure(ed, 2), 72, ed, 2, GREY);
-  sh.box(16, 98, W - 32, 2, INK);
-
-  // ---- lead: the Wall Street rout ----
-  const lx = 16, ly = 106, lw = W - 32, lh = 244;
-  sh.box(lx, ly, lw, lh, WHITE);
-  sh.border(lx, ly, lw, lh, 2, INK);
-  sh.box(lx + 2, ly + 2, lw - 4, 24, RED);
-  sh.print(lx + 10, ly + 7, 'LEAD STORY - MARKETS', 2, WHITE);
-  sceneMarket(sh, lx + 12, ly + 38, 320, 194);
-  const tx = lx + 348, tw = lw - 348 - 16;
-  const hl = sh.wrap("WALL STREET'S WORST WEEK SINCE 2020", 4, tw, 2);
-  hl.forEach((ln, i) => sh.print(tx, ly + 40 + i * 34, ln, 4, INK));
-  const subY = ly + 40 + hl.length * 34 + 6;
-  sh.print(tx, subY, 'NASDAQ -5.3% AS AI SELLOFF DEEPENS', 3, NAVY);
-  sh.block(tx, subY + 30,
-    'The S&P 500 falls 3.7% for a seventh straight day and the Dow enters correction territory. Nvidia tumbles 14% as more than $4 trillion in value is wiped from US stocks in a week.',
-    2, tw, 4, BODY, 18);
-
-  // ---- grid: six more stories of the day ----
-  const cw = 320, ch = 248;
-  const cols = [16, 352, 688];
-  const rows = [358, 614];
-  storyCard(sh, cols[0], rows[0], cw, ch, 'THE GULF', RED,
-    'MISSILES AT RIYADH STOPPED',
-    'Saudi defences down three Houthi missiles; Hormuz attacks peak.',
-    sceneGulf);
-  storyCard(sh, cols[1], rows[0], cw, ch, 'THE BALTIC', NAVY,
-    'DRONE FIRE HITS RUSSIAN SHIP',
-    'Sanctioned cargo ship hit in the Gulf of Finland; crew evacuated.',
-    sceneBaltic);
-  storyCard(sh, cols[2], rows[0], cw, ch, 'EUROPE', TEAL,
-    'DENMARK EXPELS RUSSIAN ATTACHE',
-    'Copenhagen ties Moscow to a foiled assassination plot.',
-    sceneDenmark);
-  storyCard(sh, cols[0], rows[1], cw, ch, 'MEXICO', BROWN,
-    'MEXICO NABS CARTEL KINGPIN',
-    "'Chapo Isidro' seized in a chaotic military operation, Mexico says.",
-    sceneMexico);
-  storyCard(sh, cols[1], rows[1], cw, ch, 'WASHINGTON', GREEN,
-    'THE PENNY IS DEAD',
-    'Trump signs the Common Cents Act; cash rounds to the nearest nickel.',
-    scenePenny);
-  storyCard(sh, cols[2], rows[1], cw, ch, 'CULTURE', PURPLE,
-    'GTA VI: $2.36BN IN A DAY',
-    'An estimated 24.59 million copies sold on day one, a record opening.',
-    sceneGta);
-
-  // ---- ticker: in brief ----
-  const ty = 870, th = 88;
-  sh.box(16, ty, W - 32, th, NAVY);
-  sh.print(28, ty + 8, 'IN BRIEF: COP31 talks slip into overtime over fossil fuels', 2, WHITE);
-  sh.print(28, ty + 32, 'Earthquake shakes central Peru • Kryvyi Rih strike kills paramedic and boy, 7', 2, WHITE);
-  sh.print(28, ty + 56, "Trump touts Putin talks at briefing • Virginia's first measles death of 2026", 2, WHITE);
-
-  // ---- footer ----
-  const foot = 'THE DAILY GLOBE • SATURDAY 21 NOVEMBER 2026 • ALL STORIES REPORTED THAT DAY';
-  sh.print(Math.floor((W - sh.measure(foot, 2)) / 2), 978, foot, 2, GREY);
+// Draw one glyph at scale s (each font pixel becomes an s x s block).
+function drawGlyph(ch: string, x: number, y: number, s: number, c: [number, number, number]): void {
+  const g = glyph(ch);
+  for (let r = 0; r < 7; r++) {
+    for (let col = 0; col < 5; col++) {
+      if (g[r][col] === "1") rect(x + col * s, y + r * s, s, s, c);
+    }
+  }
 }
 
-// ---------------------------------------------------------------- scenes --
-// Each scene draws inside a box (x, y, w, h) with flat colours only.
+// Width of a string at scale s (6 font units per char, minus trailing gap).
+function textW(s: string, sc: number): number {
+  return s.length === 0 ? 0 : s.length * 6 * sc - sc;
+}
+function drawText(s: string, x: number, y: number, sc: number, c: [number, number, number]): void {
+  for (let i = 0; i < s.length; i++) drawGlyph(s[i], x + i * 6 * sc, y, sc, c);
+}
+function drawTextCentered(s: string, cx: number, y: number, sc: number, c: [number, number, number]): void {
+  drawText(s, cx - Math.floor(textW(s, sc) / 2), y, sc, c);
+}
 
-// LEAD: a falling market chart on a dark board, red line plunging down.
-function sceneMarket(sh: Sheet, x: number, y: number, w: number, h: number): void {
-  sh.box(x, y, w, h, DARK);
-  for (let i = 1; i < 5; i++) sh.box(x + 8, y + i * Math.floor(h / 5), w - 16, 1, [42, 72, 96]);
-  for (let i = 1; i < 4; i++) sh.box(x + i * Math.floor(w / 4), y + 8, 1, h - 16, [42, 72, 96]);
-  // falling line: high left, low right, with a down arrow at the end
-  const pts: [number, number][] = [[0.04, 0.14], [0.22, 0.26], [0.40, 0.22], [0.58, 0.48], [0.74, 0.58], [0.92, 0.76]];
+// Greedy word wrap into lines that fit maxW pixels at scale sc.
+function wrap(s: string, sc: number, maxW: number): string[] {
+  const words = s.split(" ");
+  const lines: string[] = [];
+  let cur = "";
+  for (const w of words) {
+    const trial = cur === "" ? w : cur + " " + w;
+    if (textW(trial, sc) <= maxW) { cur = trial; continue; }
+    if (cur !== "") lines.push(cur);
+    cur = w;
+  }
+  if (cur !== "") lines.push(cur);
+  return lines;
+}
+function drawPara(s: string, x: number, y: number, sc: number, maxW: number, c: [number, number, number], gap = 4): number {
+  const lines = wrap(s, sc, maxW);
+  lines.forEach((ln, i) => drawText(ln, x, y + i * (7 * sc + gap), sc, c));
+  return y + lines.length * (7 * sc + gap);
+}
+
+// ---- page furniture --------------------------------------------------------
+// Small red kicker tag: white text on a red bar.
+function kicker(tag: string, x: number, y: number, sc = 2): number {
+  const w = textW(tag, sc) + 16;
+  rect(x, y, w, 7 * sc + 8, RED);
+  drawText(tag, x + 8, y + 4, sc, WHITE);
+  return w;
+}
+
+// A headline that may wrap to at most two lines, left aligned.
+function headline(s: string, x: number, y: number, sc: number, maxW: number, c: [number, number, number] = INK): number {
+  const lines = wrap(s, sc, maxW).slice(0, 2);
+  lines.forEach((ln, i) => drawText(ln, x, y + i * (7 * sc + 5), sc, c));
+  return y + lines.length * (7 * sc + 5);
+}
+
+// One story block: kicker, headline, body paragraph, dateline in grey.
+function story(x: number, y: number, w: number, tag: string, head: string, body: string, place: string, headSc = 3): number {
+  kicker(tag, x, y);
+  let cy = y + 7 * 2 + 12;
+  cy = headline(head, x, cy, headSc, w);
+  cy += 8;
+  drawText(place + " -", x, cy, 2, GREY);
+  const lead = textW(place + " - ", 2);
+  cy = drawPara(body, x + lead, cy, 2, w - lead, INK, 3);
+  return cy;
+}
+
+// Falling-market chart: axes, gridlines, a steep red polyline, end labels.
+function marketChart(x: number, y: number, w: number, h: number): void {
+  frame(x, y, w, h, INK, 2);
+  const gx = x + 34, gy = y + 12, gw = w - 48, gh = h - 40;
+  for (let i = 1; i <= 3; i++) {
+    const yy = gy + Math.floor((gh * i) / 4);
+    line(gx, yy, gx + gw, yy, LIGHT, 1);
+  }
+  line(gx, gy + gh, gx + gw, gy + gh, INK, 2); // x axis
+  line(gx, gy, gx, gy + gh, INK, 2); // y axis
+  drawText("NASDAQ", x + 6, y + 4, 1, GREY);
+  drawText("-5.3%", x + w - 34, y + 4, 1, RED);
+  // A week of falling closes, steepening into Friday.
+  const pts: [number, number][] = [
+    [0, 0.08], [0.14, 0.16], [0.28, 0.14], [0.42, 0.30],
+    [0.56, 0.38], [0.70, 0.52], [0.84, 0.72], [1, 0.97],
+  ];
   for (let i = 0; i < pts.length - 1; i++) {
-    sh.stroke(
-      x + Math.floor(w * pts[i][0]), y + Math.floor(h * pts[i][1]),
-      x + Math.floor(w * pts[i + 1][0]), y + Math.floor(h * pts[i + 1][1]),
-      5, [255, 70, 60],
-    );
+    const ax = gx + Math.floor(pts[i][0] * gw);
+    const ay = gy + Math.floor(pts[i][1] * gh);
+    const bx = gx + Math.floor(pts[i + 1][0] * gw);
+    const by = gy + Math.floor(pts[i + 1][1] * gh);
+    line(ax, ay, bx, by, RED, 3);
   }
-  const ex = x + Math.floor(w * 0.92), ey = y + Math.floor(h * 0.76);
-  sh.wedge(ex - 12, ey - 4, ex + 12, ey - 4, ex, ey + 14, [255, 70, 60]);
-  // big fall figure, top left, on a solid patch so the line passes behind it
-  sh.box(x + 6, y + 4, 124, 42, DARK);
-  sh.print(x + 10, y + 8, '-5.3%', 4, [255, 210, 90]);
-  sh.print(x + 10, y + h - 26, 'NASDAQ', 2, [120, 200, 230]);
-  sh.print(x + 92, y + h - 26, 'S&P -3.7%', 2, [255, 120, 110]);
-  sh.print(x + 212, y + h - 26, 'DOW -1.9%', 2, [255, 120, 110]);
+  drawText("MON", gx - 2, gy + gh + 6, 1, GREY);
+  drawText("FRI", gx + gw - 18, gy + gh + 6, 1, GREY);
 }
 
-// THE GULF: a tanker at sea, missile trails overhead, an intercept burst.
-function sceneGulf(sh: Sheet, x: number, y: number, w: number, h: number): void {
-  sh.box(x, y, w, h, [214, 228, 238]); // hazy sky
-  sh.blob(x + w - 46, y + 16, 11, [255, 224, 140]); // low sun
-  const seaY = y + Math.floor(h * 0.58);
-  sh.box(x, seaY, w, h - Math.floor(h * 0.58), [44, 96, 140]); // sea
-  for (let i = 0; i < 5; i++) sh.box(x + 12 + i * 56, seaY + 10 + (i % 2) * 10, 36, 3, [120, 178, 210]);
-  // tanker: dark hull, red stripe, stacked containers
-  const hy = seaY - 14;
-  sh.box(x + 40, hy, w - 110, 14, [40, 44, 50]);
-  sh.box(x + 40, hy + 10, w - 110, 4, RED);
-  sh.box(x + 52, hy - 22, 34, 22, [190, 70, 50]);
-  sh.box(x + 92, hy - 22, 34, 22, [60, 120, 90]);
-  sh.box(x + 132, hy - 22, 34, 22, [210, 160, 60]);
-  sh.box(x + w - 74, hy - 26, 22, 26, [220, 220, 214]); // bridge
-  sh.box(x + w - 70, hy - 34, 14, 8, [220, 220, 214]);
-  // missile trails arcing down from the top right
-  sh.stroke(x + w - 30, y + 6, x + w - 90, y + 34, 3, [90, 90, 92]);
-  sh.stroke(x + w - 60, y + 4, x + w - 130, y + 30, 3, [90, 90, 92]);
-  // intercept burst where a trail is cut
-  const bx = x + w - 110, by = y + 30;
-  for (let a = 0; a < 8; a++) {
-    const ang = (a * Math.PI) / 4;
-    sh.stroke(bx, by, Math.round(bx + Math.cos(ang) * 20), Math.round(by + Math.sin(ang) * 20), 4, a % 2 ? [255, 190, 60] : [255, 110, 30]);
+// Simple globe: circle, equator, two meridians, a few land dots.
+function globe(cx: number, cy: number, r: number, c: [number, number, number]): void {
+  const steps = 72;
+  for (let i = 0; i < steps; i++) {
+    const a0 = (i / steps) * Math.PI * 2, a1 = ((i + 1) / steps) * Math.PI * 2;
+    line(Math.round(cx + r * Math.cos(a0)), Math.round(cy + r * Math.sin(a0)),
+      Math.round(cx + r * Math.cos(a1)), Math.round(cy + r * Math.sin(a1)), c, 2);
   }
-  sh.blob(bx, by, 8, [255, 220, 110]);
-}
-
-// THE BALTIC: a cargo ship on grey water, flames and smoke, drones above.
-function sceneBaltic(sh: Sheet, x: number, y: number, w: number, h: number): void {
-  sh.box(x, y, w, h, [168, 182, 192]); // cold sky
-  const seaY = y + Math.floor(h * 0.60);
-  sh.box(x, seaY, w, h - Math.floor(h * 0.60), [70, 104, 128]); // grey sea
-  for (let i = 0; i < 5; i++) sh.box(x + 10 + i * 56, seaY + 12 + (i % 2) * 10, 34, 3, [140, 168, 184]);
-  // ship: grey hull with a red waterline, low superstructure
-  const hy = seaY - 12;
-  sh.box(x + 36, hy, w - 92, 12, [80, 84, 88]);
-  sh.box(x + 36, hy + 8, w - 92, 4, RED);
-  sh.box(x + w - 76, hy - 20, 26, 20, [200, 200, 194]);
-  sh.box(x + 56, hy - 14, 44, 14, [120, 122, 116]);
-  // flames licking from mid-deck
-  const fx = x + Math.floor(w * 0.45), fy = hy - 2;
-  sh.wedge(fx - 16, fy, fx, fy - 30, fx + 6, fy, [255, 110, 30]);
-  sh.wedge(fx - 4, fy, fx + 12, fy - 22, fx + 20, fy, [255, 190, 60]);
-  sh.wedge(fx + 8, fy, fx + 18, fy - 14, fx + 28, fy, [255, 110, 30]);
-  sh.blob(fx + 4, fy - 8, 7, [255, 220, 110]);
-  // smoke puffs drifting up-left
-  sh.blob(fx - 26, fy - 26, 9, [110, 110, 108]);
-  sh.blob(fx - 42, fy - 34, 11, [140, 140, 138]);
-  sh.blob(fx - 60, fy - 40, 8, [110, 110, 108]);
-  // three drones, small crosses in the sky
-  const drone = (dx: number, dy: number) => {
-    sh.box(dx - 7, dy - 1, 14, 3, INK);
-    sh.box(dx - 1, dy - 7, 3, 14, INK);
-  };
-  drone(x + 44, y + 14);
-  drone(x + 84, y + 8);
-  drone(x + w - 40, y + 12);
-}
-
-// EUROPE: the Danish flag on a pole beside a ministry building.
-function sceneDenmark(sh: Sheet, x: number, y: number, w: number, h: number): void {
-  sh.box(x, y, w, h, [216, 226, 232]);
-  sh.box(x, y + h - 22, w, 22, [118, 138, 108]); // lawn
-  // flagpole with the Danish flag (red field, white cross)
-  const px = x + 30;
-  sh.box(px, y + 8, 4, h - 30, [70, 60, 50]);
-  const fw = 86, fh = 52, fy = y + 10;
-  sh.box(px + 4, fy, fw, fh, RED);
-  sh.box(px + 4 + 26, fy, 12, fh, WHITE); // vertical arm of the cross
-  sh.box(px + 4, fy + 20, fw, 12, WHITE); // horizontal arm
-  // ministry building with columns
-  const bx = x + 150, bw = w - 166;
-  const by = y + Math.floor(h * 0.34);
-  sh.box(bx, by, bw, h - Math.floor(h * 0.34) - 22, [238, 230, 210]);
-  sh.wedge(bx - 6, by, bx + bw / 2, by - 16, bx + bw + 6, by, [176, 54, 48]);
-  for (let i = 0; i < 4; i++) {
-    const cx = bx + 14 + i * Math.floor((bw - 28) / 3);
-    sh.box(cx, by + 8, 10, h - Math.floor(h * 0.34) - 36, [200, 190, 168]);
+  line(cx - r, cy, cx + r, cy, c, 1);
+  for (let k = -1; k <= 1; k++) {
+    for (let i = 0; i < steps; i++) {
+      const a0 = (i / steps) * Math.PI, a1 = ((i + 1) / steps) * Math.PI;
+      const rx = r * 0.55;
+      line(Math.round(cx + rx * Math.cos(a0) + k * r * 0.28), Math.round(cy + r * Math.sin(a0) * 0.96),
+        Math.round(cx + rx * Math.cos(a1) + k * r * 0.28), Math.round(cy + r * Math.sin(a1) * 0.96), c, 1);
+    }
   }
-  sh.box(bx + bw / 2 - 8, by + h - Math.floor(h * 0.34) - 22 - 18, 16, 18, [90, 70, 55]);
+  // Land dots, roughly placed.
+  const dots: [number, number][] = [[-0.45, -0.3], [-0.3, -0.1], [0.1, -0.45], [0.3, -0.2], [0.55, 0.25], [-0.15, 0.4], [0.35, 0.5]];
+  for (const [dx, dy] of dots) rect(Math.round(cx + dx * r), Math.round(cy + dy * r), 4, 4, c);
 }
 
-// MEXICO: a wanted poster on a desert wall, stamped CAUGHT.
-function sceneMexico(sh: Sheet, x: number, y: number, w: number, h: number): void {
-  sh.box(x, y, w, h, [232, 204, 158]); // desert wall
-  sh.box(x, y + h - 14, w, 14, [196, 158, 104]); // ground
-  // poster
-  const px = x + Math.floor(w * 0.30), pw = Math.floor(w * 0.40);
-  sh.box(px, y + 4, pw, h - 8, [246, 238, 220]);
-  sh.border(px, y + 4, pw, h - 8, 2, INK);
-  sh.print(px + Math.floor((pw - sh.measure('WANTED', 2)) / 2), y + 10, 'WANTED', 2, INK);
-  // silhouette: head and shoulders
-  const cx = px + Math.floor(pw / 2);
-  sh.blob(cx, y + 34, 11, [70, 64, 58]);
-  sh.wedge(cx - 20, y + 62, cx + 20, y + 62, cx, y + 44, [70, 64, 58]);
-  sh.box(cx - 20, y + 56, 40, 8, [70, 64, 58]);
-  // red CAUGHT stamp bar across the poster bottom (text sits inside the bar)
-  sh.box(px + 4, y + h - 26, pw - 8, 18, RED);
-  sh.print(px + Math.floor((pw - sh.measure('CAUGHT', 2)) / 2), y + h - 22, 'CAUGHT', 2, WHITE);
+// ---- the front page --------------------------------------------------------
+function drawPage(): void {
+  rect(0, 0, W, H, PAPER);
+  frame(8, 8, W - 16, H - 16, INK, 3);
+
+  // Masthead: navy band, globe at left, paper name, date line.
+  rect(14, 14, W - 28, 132, NAVY);
+  globe(86, 80, 44, WHITE);
+  drawText("THE DAILY GLOBE", 152, 34, 7, WHITE);
+  hline(152, 96, W - 152 - 40, WHITE, 2);
+  drawText("SATURDAY, 21 NOVEMBER 2026", 152, 108, 3, WHITE);
+  drawText("NO. 325", 900, 108, 2, [190, 200, 220]);
+
+  // Thin rule + edition line under the masthead.
+  hline(14, 152, W - 28, INK, 3);
+  drawTextCentered("MARKETS ROUT  -  MISSILES AT RIYADH  -  KINGPIN CAUGHT  -  PENNY ENDS", W / 2, 164, 2, NAVY);
+
+  // ---- Lead story: the market rout, left column with chart -----------------
+  const leadY = 196;
+  hline(24, leadY - 8, W - 48, INK, 2);
+  kicker("LEAD STORY - MARKETS", 24, leadY);
+  let cy = headline("MARKETS IN FREEFALL", 24, leadY + 34, 6, 620);
+  cy += 10;
+  cy = drawPara(
+    "Wall Street's AI sell-off deepened on Friday. The Nasdaq fell 5.3% in a day and 10% in a week, its worst week since 2020, wiping out all its gains for 2026. The S&P 500 slid 3.7% into correction, and Bitcoin fell below $57,000.",
+    24, cy, 2, 620, INK, 4,
+  );
+  marketChart(24, cy + 12, 620, 150);
+  drawText("NEW YORK - THE ROUT CAPPED A WEEK OF GROWING", 24, cy + 172, 2, GREY);
+  drawText("DOUBTS OVER AI SPENDING. NVIDIA FELL 14% FRIDAY.", 24, cy + 190, 2, GREY);
+
+  // ---- Right rail: Gulf + Bahrain ------------------------------------------
+  const railX = 676;
+  vline(660, leadY, 470, INK, 2);
+  let ry = story(railX, leadY, 324, "MIDDLE EAST", "MISSILES AT RIYADH",
+    "Saudi defences destroyed three Houthi missiles fired at Riyadh early on Saturday, the third night running. Two tankers were also hit near Hormuz.",
+    "RIYADH", 3);
+  ry += 18;
+  hline(railX, ry, 324, LIGHT, 2);
+  ry += 16;
+  ry = story(railX, ry, 324, "GULF", "IRAN HITS US BASES IN BAHRAIN",
+    "Iran said it struck two US bases in Bahrain on Saturday night. Bahrain reported a fire at an industrial site.",
+    "MANAMA", 3);
+  ry += 18;
+  hline(railX, ry, 324, LIGHT, 2);
+  ry += 14;
+  drawText("ALSO: DENMARK EXPELLED RUSSIA'S DEFENCE ATTACHE.", railX, ry, 1, INK);
+
+  // ---- Middle band: Ukraine + Mexico, two columns --------------------------
+  const midY = 700;
+  hline(24, midY, W - 48, INK, 3);
+  const colW = 470;
+  let my = story(24, midY + 16, colW, "EUROPE - WAR", "WAR SPILLS OVER",
+    "A Russian missile hit Kryvyi Rih, killing two people. Missiles also landed in Poland. Ukraine struck a cargo ship bound for Kaliningrad in the Gulf of Finland.",
+    "KYIV", 3);
+  vline(512, midY + 16, 150, INK, 2);
+  my = story(528, midY + 16, colW, "AMERICAS - CRIME", "CARTEL KINGPIN CAUGHT",
+    "Mexico captured Fausto Isidro Meza-Flores, 'Chapo Isidro', one of the FBI's ten most wanted, in a raid in Sinaloa. Eleven people were killed in the fighting.",
+    "GUASAVE", 3);
+  void my;
+
+  // ---- Bottom strip: penny + GTA VI -----------------------------------------
+  const botY = 884;
+  hline(24, botY, W - 48, INK, 3);
+  rect(24, botY + 12, 470, 96, LIGHT);
+  frame(24, botY + 12, 470, 96, NAVY, 2);
+  drawText("THE PENNY ENDS", 40, botY + 28, 3, NAVY);
+  drawPara("Trump signed the Common Cents Act, ending penny production.",
+    40, botY + 56, 2, 440, INK, 3);
+  rect(530, botY + 12, 470, 96, NAVY);
+  drawText("GTA VI'S $2.36BN DAY", 546, botY + 28, 3, WHITE);
+  drawPara("Grand Theft Auto VI sold an estimated 24.59m copies on its first day.",
+    546, botY + 56, 2, 440, WHITE, 3);
+
+  // Footer.
+  drawTextCentered("THE DAILY GLOBE  -  SATURDAY 21 NOVEMBER 2026  -  ALL THE DAY'S WORLD NEWS ON ONE PAGE", W / 2, 996, 1, GREY);
 }
 
-// WASHINGTON: the Capitol dome behind a giant copper penny, crossed out.
-function scenePenny(sh: Sheet, x: number, y: number, w: number, h: number): void {
-  sh.box(x, y, w, h, SKY);
-  sh.blob(x + w - 40, y + 14, 10, [255, 226, 150]);
-  // Capitol dome silhouette, small, at the back
-  const bx = x + 16, by = y + h - 30;
-  sh.box(bx, by - 22, 74, 22, [240, 240, 236]);
-  sh.oval(bx + 37, by - 24, 20, 12, [240, 240, 236]);
-  sh.box(bx + 35, by - 40, 4, 10, [240, 240, 236]);
-  sh.box(bx + 6, by - 12, 8, 12, [200, 200, 196]);
-  sh.box(bx + 60, by - 12, 8, 12, [200, 200, 196]);
-  // giant copper penny, right side
-  const cx = x + Math.floor(w * 0.68), cy = y + Math.floor(h * 0.46), r = 30;
-  sh.blob(cx, cy, r, [184, 110, 62]);
-  sh.blob(cx, cy, r - 5, [206, 134, 82]);
-  // red cross-out, then the 1 on top in a pale tone so it still reads
-  sh.stroke(cx - 24, cy - 24, cx + 24, cy + 24, 5, RED);
-  sh.stroke(cx + 24, cy - 24, cx - 24, cy + 24, 5, RED);
-  sh.print(cx - 8, cy - 12, '1', 3, [255, 232, 200]);
+// ---- entry point -----------------------------------------------------------
+function main(): void {
+  drawPage();
+  const png = encodePng();
+  const outDir = process.env.MAKEFUN_OUTPUT_DIR ?? "/output";
+  mkdirSync(outDir, { recursive: true });
+  writeFileSync(`${outDir}/entry.png`, png);
 }
 
-// CULTURE: neon dusk over a game-city skyline, a giant VI.
-function sceneGta(sh: Sheet, x: number, y: number, w: number, h: number): void {
-  sh.box(x, y, w, h, [64, 30, 92]); // dusk purple
-  sh.box(x, y + Math.floor(h * 0.42), w, Math.floor(h * 0.16), [200, 80, 90]); // sunset band
-  sh.blob(x + Math.floor(w * 0.74), y + 18, 15, [255, 120, 90]); // sun
-  sh.blob(x + Math.floor(w * 0.74), y + 18, 10, [255, 176, 116]);
-  // skyline silhouettes
-  const base = y + h;
-  const towers: [number, number, number][] = [[0.08, 0.40, 0.14], [0.24, 0.58, 0.12], [0.38, 0.34, 0.14], [0.54, 0.52, 0.12], [0.68, 0.30, 0.13]];
-  for (const [fx, fh, fw] of towers) {
-    const tx = x + Math.floor(w * fx), tw = Math.floor(w * fw), th = Math.floor(h * fh);
-    sh.box(tx, base - th - 18, tw, th + 18, [22, 14, 42]);
-    for (let r = 0; r < 2; r++) for (let c2 = 0; c2 < 3; c2++)
-      sh.box(tx + 4 + c2 * 11, base - th - 10 + r * 13, 5, 6, (r + c2) % 2 ? [255, 210, 90] : [90, 220, 220]);
-  }
-  sh.box(x, base - 18, w, 18, [14, 10, 28]); // street
-  // giant VI, gold with a pink shadow offset down-right
-  sh.print(x + 12, y + 8, 'VI', 5, [255, 90, 140]);
-  sh.print(x + 8, y + 4, 'VI', 5, [255, 210, 90]);
-}
-
-// ------------------------------------------------------------------ entry --
-const outDir = process.env.MAKEFUN_OUTPUT_DIR ?? '/output';
-mkdirSync(outDir, { recursive: true });
-const sheet = new Sheet();
-drawPage(sheet);
-writeFileSync(join(outDir, 'entry.png'), encodePNG(sheet));
+main();

@@ -1,51 +1,40 @@
 # news-image-20261121
 
-![bounty](https://make.fun/badge/news-image-20261121.svg)
+![news-image-20261121](https://make.fun/badge/news-image-20261121.svg)
 ![rank](https://make.fun/badge/news-image-20261121/aldy007x/news-image-20261121/rank.svg)
 ![reward](https://make.fun/badge/news-image-20261121/aldy007x/news-image-20261121/reward.svg)
 
-A make.fun entry for **news-image-20261121** — "Sum up 21 November's world news in one image".
+## The Daily Globe — Saturday 21 November 2026
 
-## What it is
+A program that draws a newspaper front page summing up the world's news of
+Saturday 21 November 2026, in one 1024x1024 PNG.
 
-`main.ts` (Node 22, standard library only) draws a newspaper front page —
-**THE DAILY GLOBE, Saturday 21 November 2026** — and writes it to
-`/output/entry.png`: one 1024x1024 PNG, deterministic (two runs are
-byte-identical), no network access at run time. It uses a small software
-rasteriser in the file itself: a hand-built 5x7 bitmap font, flat-colour
-scenes per story, and a hand-rolled PNG encoder.
+The front page leads with Wall Street's rout — the Nasdaq down 5.3% in a day,
+its worst week since 2020 — and covers the missiles fired at Riyadh, Iran's
+strike on US bases in Bahrain, the war spilling into Poland and the Gulf of
+Finland, the capture of cartel boss "Chapo Isidro" in Mexico, the end of the
+penny, and GTA VI's record first day.
 
-## The day's news (all verified against reports dated 21 November 2026)
+## How it works
 
-- **Lead — Markets:** Wall Street's worst week since 2020. The Nasdaq
-  plunged 5.3% in a day as the AI sell-off deepened; the S&P 500 fell 3.7%
-  for a seventh straight day, the Dow entered correction territory, and
-  Nvidia tumbled 14% as more than $4 trillion in value was wiped from US
-  stocks in a week.
-- **The Gulf:** Saudi defences intercepted three Houthi ballistic missiles
-  aimed at Riyadh; attacks on shipping near the Strait of Hormuz reached
-  their highest level of the war.
-- **The Baltic:** a drone attack set a sanctioned Russian cargo ship ablaze
-  in the Gulf of Finland; the crew was evacuated as it drifted into Finnish
-  waters.
-- **Europe:** Denmark expelled Russia's defence attaché, tying Moscow to a
-  foiled assassination plot near Copenhagen.
-- **Mexico:** FBI most-wanted cartel leader "Chapo Isidro" was captured in
-  a military operation.
-- **Washington:** President Trump signed the Common Cents Act, ending penny
-  production; cash rounds to the nearest nickel.
-- **Culture:** GTA VI sold an estimated 24.59 million copies on its first
-  day, about $2.36 billion — a record opening.
-- **In brief:** COP31 talks slipped into overtime over fossil fuels; an
-  earthquake shook central Peru; a Russian strike on Kryvyi Rih killed a
-  paramedic and a 7-year-old boy; Trump touted his Putin talks at a White
-  House briefing; Virginia recorded its first measles death of 2026.
+`main.ts` (Node 22, standard library only) draws everything itself:
+
+- a small RGB canvas with its own rectangle, line and chart drawing,
+- a 5x7 bitmap font designed for this entry,
+- a hand-built PNG encoder (zlib from Node's standard library),
+- a fixed newspaper layout: masthead, lead story with a falling-market chart,
+  a right-hand rail, two middle columns and a bottom strip.
+
+It runs with no network and is deterministic: two runs write byte-identical
+files.
 
 ## Run it
 
 ```sh
 mkdir -p out && MAKEFUN_OUTPUT_DIR=out node main.ts
 ```
+
+The image is written to `out/entry.png` (1024x1024, under 1 MiB).
 
 ## License
 
